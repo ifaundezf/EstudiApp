@@ -8,7 +8,7 @@ st.set_page_config(
 )
 
 # Título y banner
-st.image("assets/banner_estudiapp.png", use_column_width=True)
+st.image("assets/banner_estudiapp.png", use_container_width=True)
 st.title("Bienvenidos a EstudiApp 📚✨")
 
 # Inicializar session_state si no existe
