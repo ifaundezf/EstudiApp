@@ -1,0 +1,11 @@
+streamlit
+openai
+python-docx
+PyMuPDF
+pytesseract
+pandas
+numpy
+requests
+Pillow
+msal
+python-dotenv
