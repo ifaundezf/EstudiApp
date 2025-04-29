@@ -22,8 +22,8 @@ import streamlit as st
 os.environ["TESSDATA_PREFIX"] = "/opt/homebrew/share/tessdata/"
 OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
 CLIENT_ID = st.secrets["CLIENT_ID"]
-AUTHORITY = "https://login.microsoftonline.com/consumers"
-SCOPES = ["Files.Read.All"]
+AUTHORITY = st.secrets["AUTHORITY"]
+SCOPES = [s.strip() for s in st.secrets["SCOPES"].split(",")]
 
 BASE_ONEDRIVE_PATH = "/Documents/PERSONAL/PRINCESAS/COLEGIO/ASIGNATURAS"
 BASE_LIBROS_PATH = "/Documents/PERSONAL/PRINCESAS/COLEGIO/LIBROS/MINEDUC"
@@ -54,6 +54,9 @@ def authenticate_onedrive():
         return result['access_token']
     else:
         raise Exception("Error autenticando con Microsoft Graph")
+
+# ... (resto del código sin cambios)
+
 
 def download_onedrive_file(file_id, token):
     url = f"https://graph.microsoft.com/v1.0/me/drive/items/{file_id}/content"
