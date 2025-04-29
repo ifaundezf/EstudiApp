@@ -1,11 +1,10 @@
 streamlit
-openai
-python-docx
-PyMuPDF
-pytesseract
 pandas
-numpy
+python-docx
 requests
-Pillow
 msal
-python-dotenv
+openai
+transformers
+torch
+Pillow
+PyMuPDF

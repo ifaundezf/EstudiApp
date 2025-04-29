@@ -1,54 +1,13 @@
+# EstudiApp (Streamlit + HuggingFace OCR)
 
-# EstudiApp 📚✨
+Esta app permite a estudiantes generar preguntas tipo Kahoot en la nube.
 
-**EstudiApp** es una aplicación construida en Python y Streamlit que permite a Catita y Leito generar quizzes tipo Kahoot para sus asignaturas escolares y lecturas complementarias.
+## Flujo:
+1. Selecciona hija y asignatura.
+2. Se procesan los apuntes (.docx) desde OneDrive.
+3. Se procesan libros MINEDUC (.pdf) si están disponibles.
+4. Se aplica OCR sobre imágenes usando `microsoft/trocr-base-stage1`.
+5. Se generan preguntas usando OpenAI (GPT-4 Turbo).
+6. Las preguntas se exportan en formato compatible con Kahoot (.xlsx).
 
-## Funcionalidades
-- Selección de hija (`Catita` o `Leito`).
-- Creación de quizzes desde:
-  - Asignaturas escolares (apuntes + libros MINEDUC).
-  - Libros de lectura complementaria.
-- Procesamiento automático de Word, PDFs, imágenes OCR.
-- Generación de preguntas con OpenAI.
-- Exportación en formato Excel listo para Kahoot.
-
-## Estructura del proyecto
-```
-EstudiApp/
-├── assets/
-│    └── banner_estudiapp.png
-├── outputs/
-│    └── .gitkeep
-├── utils/
-│    └── .gitkeep
-├── kahoot_app.py
-├── requirements.txt
-└── README.md
-```
-
-## Instalación
-
-```bash
-# Clonar el repositorio
-git clone https://github.com/tu_usuario/EstudiApp.git
-cd EstudiApp
-
-# Crear entorno virtual (opcional pero recomendado)
-python3 -m venv venv
-source venv/bin/activate  # Mac/Linux
-venv\Scripts\activate   # Windows
-
-# Instalar dependencias
-pip install -r requirements.txt
-
-# Ejecutar la app
-streamlit run kahoot_app.py
-```
-
-## Variables de entorno requeridas (.env)
-- `OPENAI_API_KEY`
-- `CLIENT_ID`
-- `TESSDATA_PREFIX`
-
-## Autor
-Creado con 💙 para Catita y Leito por [Tu Nombre Aquí].
+Todo funciona sin requerir instalación local. Ideal para uso móvil.
