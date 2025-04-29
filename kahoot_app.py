@@ -144,7 +144,7 @@ def app():
     if st.button("Continuar 🚀"):
         st.session_state.hija = hija
         st.session_state.actividad = actividad
-        st.experimental_rerun()
+        st.rerun()
 
     if st.session_state.get("actividad") == "Asignaturas Escolares":
         token = authenticate_onedrive()
