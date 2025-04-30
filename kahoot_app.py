@@ -1,49 +1,51 @@
-# kahoot_app.py - EstudiApp con OCR Hugging Face (TrOCR) - 100% nube
+# kahoot_app.py (actualizado para integrar Hugging Face Space en vez de OpenAI)
 
 import os
 import io
 import re
 import json
+import logging
 from pathlib import Path
 from datetime import datetime
 
 import fitz  # PyMuPDF
 import docx
-import requests
 import pandas as pd
+import requests
 from PIL import Image
-import streamlit as st
-from transformers import TrOCRProcessor, VisionEncoderDecoderModel
 from msal import PublicClientApplication, SerializableTokenCache
-from openai import OpenAI
+import streamlit as st
+from transformers import BlipProcessor, BlipForConditionalGeneration
+import torch
 
-# === CONFIG ===
-client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+# === CONFIGURACIÓN INICIAL ===
 CLIENT_ID = st.secrets["CLIENT_ID"]
 AUTHORITY = st.secrets["AUTHORITY"]
 SCOPES = [s.strip() for s in st.secrets["SCOPES"].split(",")]
+HF_SPACE_URL = "https://ifaundezf-estudiapp-quiz-generator.hf.space/run/predict"
 
 BASE_ONEDRIVE_PATH = "/Documents/PERSONAL/PRINCESAS/COLEGIO/ASIGNATURAS"
 BASE_LIBROS_PATH = "/Documents/PERSONAL/PRINCESAS/COLEGIO/LIBROS/MINEDUC"
 TOKEN_CACHE_PATH = "token_cache.bin"
-TIME_OPTIONS = [5, 10, 20, 30, 60, 90, 120, 240]
 
-now = datetime.now().strftime('%Y%m%d_%H%M%S')
-
-# === OCR Hugging Face TrOCR ===
+# === OCR HuggingFace ===
 @st.cache_resource
-def load_trocr():
-    processor = TrOCRProcessor.from_pretrained("microsoft/trocr-base-stage1")
-    model = VisionEncoderDecoderModel.from_pretrained("microsoft/trocr-base-stage1")
+def load_ocr_model():
+    processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
+    model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base")
     return processor, model
 
-def ocr_image_with_trocr(image):
-    processor, model = load_trocr()
-    pixel_values = processor(images=image.convert("RGB"), return_tensors="pt").pixel_values
-    generated_ids = model.generate(pixel_values)
-    return processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
+def ocr_image_huggingface(img):
+    try:
+        processor, model = load_ocr_model()
+        inputs = processor(images=img, return_tensors="pt")
+        out = model.generate(**inputs)
+        return processor.decode(out[0], skip_special_tokens=True)
+    except Exception as e:
+        st.warning(f"❗ Error OCR en imagen: {e}")
+        return ""
 
-# === UTILIDADES ===
+# === FUNCIONES AUXILIARES ===
 def authenticate_onedrive():
     cache = SerializableTokenCache()
     if os.path.exists(TOKEN_CACHE_PATH):
@@ -55,7 +57,7 @@ def authenticate_onedrive():
         if result:
             return result['access_token']
     flow = app.initiate_device_flow(scopes=SCOPES)
-    st.info(f"🔐 Ve a {flow['verification_uri']} e ingresa el código: {flow['user_code']}")
+    st.info(f"\U0001f510 Ve a {flow['verification_uri']} e ingresa el código: {flow['user_code']}")
     result = app.acquire_token_by_device_flow(flow)
     if "access_token" in result:
         with open(TOKEN_CACHE_PATH, "w") as f:
@@ -67,110 +69,92 @@ def authenticate_onedrive():
 def download_onedrive_file(file_id, token):
     url = f"https://graph.microsoft.com/v1.0/me/drive/items/{file_id}/content"
     headers = {"Authorization": f"Bearer {token}"}
-    r = requests.get(url, headers=headers)
-    return r.content if r.status_code == 200 else None
+    response = requests.get(url, headers=headers)
+    return response.content if response.status_code == 200 else None
 
 def extract_text_from_docx(doc_bytes):
     text = ""
     doc = docx.Document(io.BytesIO(doc_bytes))
-    for p in doc.paragraphs:
-        text += p.text + "\n"
-    for rel in doc.part._rels.values():
+    for para in doc.paragraphs:
+        text += para.text + "\n"
+    for rel in doc.part._rels:
+        rel = doc.part._rels[rel]
         if "image" in rel.target_ref:
-            img_data = rel.target_part.blob
-            image = Image.open(io.BytesIO(img_data))
+            image_data = rel.target_part.blob
             try:
-                text += ocr_image_with_trocr(image) + "\n"
+                img = Image.open(io.BytesIO(image_data))
+                text += ocr_image_huggingface(img) + "\n"
             except Exception as e:
                 st.warning(f"❗ Error OCR en imagen Word: {e}")
     return text
 
 def extract_text_from_pdf(pdf_bytes):
-    texto = ""
-    pdf = fitz.open(stream=pdf_bytes, filetype="pdf")
-    for page in pdf:
-        texto += page.get_text()
-        for img in page.get_images(full=True):
-            base_img = pdf.extract_image(img[0])
-            image_bytes = base_img["image"]
-            image = Image.open(io.BytesIO(image_bytes))
-            try:
-                texto += ocr_image_with_trocr(image) + "\n"
-            except Exception as e:
-                st.warning(f"❗ Error OCR en imagen PDF: {e}")
-    pdf.close()
-    return texto
+    text = ""
+    try:
+        pdf = fitz.open(stream=pdf_bytes, filetype="pdf")
+        for page in pdf:
+            text += page.get_text()
+            for img in page.get_images(full=True):
+                try:
+                    base_image = pdf.extract_image(img[0])
+                    img_data = base_image["image"]
+                    img = Image.open(io.BytesIO(img_data))
+                    text += ocr_image_huggingface(img) + "\n"
+                except Exception as e:
+                    st.warning(f"❗ Error OCR en imagen PDF: {e}")
+        pdf.close()
+    except Exception as e:
+        st.error(f"Error leyendo PDF: {e}")
+    return text
 
-# === APP STREAMLIT ===
-def app():
-    st.title("EstudiApp 📚 - Versión en la nube con OCR HuggingFace")
+# === INTERFAZ STREAMLIT ===
+st.set_page_config(page_title="EstudiApp - OCR en la Nube", layout="centered")
+st.title("EstudiApp \U0001f4da - Versión en la nube con OCR HuggingFace")
 
-    hija = st.selectbox("¿Quién va a estudiar?", ["Catita", "Leito"])
+hija = st.selectbox("¿Quién va a estudiar?", ["Catita", "Leito"])
+if "token" not in st.session_state:
     token = authenticate_onedrive()
+    st.session_state.token = token
+else:
+    token = st.session_state.token
 
-    base_path = f"{BASE_ONEDRIVE_PATH}/{hija.upper()}/2025"
-    headers = {"Authorization": f"Bearer {token}"}
-    archivos = requests.get(f"https://graph.microsoft.com/v1.0/me/drive/root:{base_path}:/children", headers=headers).json()["value"]
-    asignaturas = [f['name'].replace('.docx', '') for f in archivos if f['name'].endswith('.docx')]
+asignatura = st.selectbox("Selecciona asignatura:", ["CIENCIAS", "HISTORIA", "INGLES", "LENGUAJE", "MATEMATICAS"])
+tiempo = st.selectbox("Tiempo por pregunta (segundos):", [5, 10, 20, 30, 60, 90, 120, 240])
+num_preguntas = st.slider("¿Cuántas preguntas deseas generar?", min_value=1, max_value=30, value=5)
 
-    asignatura = st.selectbox("Selecciona asignatura:", asignaturas)
-    if asignatura:
-        docx_id = next(f['id'] for f in archivos if f['name'] == f"{asignatura}.docx")
-        st.write("📄 Procesando apuntes...")
-        docx_bytes = download_onedrive_file(docx_id, token)
-        texto_docx = extract_text_from_docx(docx_bytes)
+if st.button("Generar preguntas desde apuntes + libros"):
+    with st.spinner("Procesando apuntes y libros..."):
+        base_path = f"{BASE_ONEDRIVE_PATH}/{hija.upper()}/2025"
+        headers = {"Authorization": f"Bearer {token}"}
+        archivos = requests.get(f"https://graph.microsoft.com/v1.0/me/drive/root:{base_path}:/children", headers=headers).json()["value"]
 
-        libro_url = f"{BASE_LIBROS_PATH}/{hija.upper()}/2025/{asignatura.upper()}"
-        libro_api_url = f"https://graph.microsoft.com/v1.0/me/drive/root:{libro_url}:/children"
-        libros = requests.get(libro_api_url, headers=headers).json().get("value", [])
-        texto_libros = ""
-        for libro in libros:
-            if libro["name"].endswith(".pdf"):
-                st.write(f"📘 Leyendo libro: {libro['name']}")
-                libro_bytes = download_onedrive_file(libro['id'], token)
-                texto_libros += extract_text_from_pdf(libro_bytes)
+        docx_file = next((f for f in archivos if f['name'].lower() == f"{asignatura.lower()}.docx"), None)
+        if not docx_file:
+            st.error("❌ Archivo de apuntes no encontrado.")
+        else:
+            doc_bytes = download_onedrive_file(docx_file['id'], token)
+            texto_docx = extract_text_from_docx(doc_bytes)
 
-        contenido = texto_docx + "\n" + texto_libros
-        cantidad = st.number_input("¿Cuántas preguntas quieres?", min_value=1, max_value=100, value=10)
-        tiempo = st.selectbox("Tiempo por pregunta (seg):", TIME_OPTIONS)
+        libros_texto = ""
+        libros_url = f"https://graph.microsoft.com/v1.0/me/drive/root:{BASE_LIBROS_PATH}/{hija.upper()}/2025/{asignatura.upper()}:/children"
+        response = requests.get(libros_url, headers=headers)
+        if response.status_code == 200:
+            libros = response.json().get("value", [])
+            for libro in libros:
+                if libro['name'].lower().endswith(".pdf"):
+                    pdf_bytes = download_onedrive_file(libro['id'], token)
+                    libros_texto += extract_text_from_pdf(pdf_bytes)
 
-        if st.button("Generar preguntas"):
-            from openai import OpenAI
-            prompt = f"""
-Genera {cantidad} preguntas tipo Kahoot del siguiente contenido:
-- 4 alternativas por pregunta
-- solo una es correcta
-- pregunta máx 120 caracteres
-- alternativa máx 75 caracteres
-Devuelve un JSON como:
-[{{"pregunta": "...", "alternativas": ["...", "...", "...", "..."], "correcta": 1}}]
-Contenido:
-{contenido[:4000]}
-"""
-            with st.spinner("Consultando OpenAI..."):
-                r = client.chat.completions.create(
-                    model="gpt-4-turbo",
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.7
-                )
-                raw = r.choices[0].message.content.strip()
-                if raw.startswith("```json"):
-                    raw = raw.removeprefix("```json").removesuffix("```").strip()
-                preguntas = json.loads(raw)
+        texto_total = texto_docx + "\n" + libros_texto
 
-            df = pd.DataFrame([{
-                "Question": p["pregunta"],
-                "Answer 1": p["alternativas"][0],
-                "Answer 2": p["alternativas"][1],
-                "Answer 3": p["alternativas"][2],
-                "Answer 4": p["alternativas"][3],
-                "Time limit (sec)": tiempo,
-                "Correct answer(s)": p["correcta"]
-            } for p in preguntas])
-
-            buffer = io.BytesIO()
-            df.to_excel(buffer, index=False)
-            st.download_button("📥 Descargar preguntas Excel Kahoot", data=buffer.getvalue(), file_name="preguntas_kahoot.xlsx")
-
-if __name__ == "__main__":
-    app()
+        # === LLAMADA A HUGGINGFACE SPACE ===
+        try:
+            respuesta = requests.post(HF_SPACE_URL, json={"data": [texto_total, num_preguntas]})
+            if respuesta.status_code == 200:
+                preguntas = respuesta.json()["data"]
+                st.success(f"✅ Se generaron {len(preguntas)} preguntas.")
+                st.json(preguntas)
+            else:
+                st.error(f"Error al generar preguntas. Código: {respuesta.status_code}")
+        except Exception as e:
+            st.error(f"Error conectando a HuggingFace Space: {e}")
