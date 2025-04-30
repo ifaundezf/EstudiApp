@@ -1,4 +1,4 @@
-# kahoot_app.py (actualizado para integrar Hugging Face Space en vez de OpenAI)
+# kahoot_app.py (actualizado con generación de preguntas vía HuggingFace Space)
 
 import os
 import io
@@ -28,7 +28,6 @@ BASE_ONEDRIVE_PATH = "/Documents/PERSONAL/PRINCESAS/COLEGIO/ASIGNATURAS"
 BASE_LIBROS_PATH = "/Documents/PERSONAL/PRINCESAS/COLEGIO/LIBROS/MINEDUC"
 TOKEN_CACHE_PATH = "token_cache.bin"
 
-# === OCR HuggingFace ===
 @st.cache_resource
 def load_ocr_model():
     processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
@@ -42,10 +41,9 @@ def ocr_image_huggingface(img):
         out = model.generate(**inputs)
         return processor.decode(out[0], skip_special_tokens=True)
     except Exception as e:
-        st.warning(f"❗ Error OCR en imagen: {e}")
+        st.warning(f"⚠️ Error OCR en imagen: {e}")
         return ""
 
-# === FUNCIONES AUXILIARES ===
 def authenticate_onedrive():
     cache = SerializableTokenCache()
     if os.path.exists(TOKEN_CACHE_PATH):
@@ -57,7 +55,7 @@ def authenticate_onedrive():
         if result:
             return result['access_token']
     flow = app.initiate_device_flow(scopes=SCOPES)
-    st.info(f"\U0001f510 Ve a {flow['verification_uri']} e ingresa el código: {flow['user_code']}")
+    st.info(f"🔐 Ve a {flow['verification_uri']} e ingresa el código: {flow['user_code']}")
     result = app.acquire_token_by_device_flow(flow)
     if "access_token" in result:
         with open(TOKEN_CACHE_PATH, "w") as f:
@@ -85,7 +83,7 @@ def extract_text_from_docx(doc_bytes):
                 img = Image.open(io.BytesIO(image_data))
                 text += ocr_image_huggingface(img) + "\n"
             except Exception as e:
-                st.warning(f"❗ Error OCR en imagen Word: {e}")
+                st.warning(f"⚠️ Error OCR imagen Word: {e}")
     return text
 
 def extract_text_from_pdf(pdf_bytes):
@@ -97,21 +95,24 @@ def extract_text_from_pdf(pdf_bytes):
             for img in page.get_images(full=True):
                 try:
                     base_image = pdf.extract_image(img[0])
-                    img_data = base_image["image"]
-                    img = Image.open(io.BytesIO(img_data))
+                    img = Image.open(io.BytesIO(base_image["image"]))
                     text += ocr_image_huggingface(img) + "\n"
                 except Exception as e:
-                    st.warning(f"❗ Error OCR en imagen PDF: {e}")
+                    st.warning(f"⚠️ Error OCR imagen PDF: {e}")
         pdf.close()
     except Exception as e:
-        st.error(f"Error leyendo PDF: {e}")
+        st.error(f"❌ Error leyendo PDF: {e}")
     return text
 
+def extract_unidades(text):
+    return sorted(set(re.findall(r"Unidad\s+\d+:.*", text)))
+
 # === INTERFAZ STREAMLIT ===
-st.set_page_config(page_title="EstudiApp - OCR en la Nube", layout="centered")
-st.title("EstudiApp \U0001f4da - Versión en la nube con OCR HuggingFace")
+st.set_page_config(page_title="EstudiApp - OCR y preguntas", layout="centered")
+st.title("EstudiApp 📚 - Generación de preguntas con Hugging Face")
 
 hija = st.selectbox("¿Quién va a estudiar?", ["Catita", "Leito"])
+
 if "token" not in st.session_state:
     token = authenticate_onedrive()
     st.session_state.token = token
@@ -119,42 +120,62 @@ else:
     token = st.session_state.token
 
 asignatura = st.selectbox("Selecciona asignatura:", ["CIENCIAS", "HISTORIA", "INGLES", "LENGUAJE", "MATEMATICAS"])
-tiempo = st.selectbox("Tiempo por pregunta (segundos):", [5, 10, 20, 30, 60, 90, 120, 240])
-num_preguntas = st.slider("¿Cuántas preguntas deseas generar?", min_value=1, max_value=30, value=5)
 
-if st.button("Generar preguntas desde apuntes + libros"):
-    with st.spinner("Procesando apuntes y libros..."):
-        base_path = f"{BASE_ONEDRIVE_PATH}/{hija.upper()}/2025"
-        headers = {"Authorization": f"Bearer {token}"}
-        archivos = requests.get(f"https://graph.microsoft.com/v1.0/me/drive/root:{base_path}:/children", headers=headers).json()["value"]
+# === Carga apuntes ===
+base_path = f"{BASE_ONEDRIVE_PATH}/{hija.upper()}/2025"
+headers = {"Authorization": f"Bearer {token}"}
+archivos = requests.get(f"https://graph.microsoft.com/v1.0/me/drive/root:{base_path}:/children", headers=headers).json()["value"]
 
-        docx_file = next((f for f in archivos if f['name'].lower() == f"{asignatura.lower()}.docx"), None)
-        if not docx_file:
-            st.error("❌ Archivo de apuntes no encontrado.")
-        else:
-            doc_bytes = download_onedrive_file(docx_file['id'], token)
-            texto_docx = extract_text_from_docx(doc_bytes)
+docx_file = next((f for f in archivos if f['name'].lower() == f"{asignatura.lower()}.docx"), None)
+if not docx_file:
+    st.error("❌ Archivo de apuntes no encontrado.")
+    st.stop()
 
-        libros_texto = ""
+st.info("📝 Cargando apuntes...")
+doc_bytes = download_onedrive_file(docx_file['id'], token)
+texto_apuntes = extract_text_from_docx(doc_bytes)
+unidades = extract_unidades(texto_apuntes)
+
+unidad_seleccionada = st.multiselect("Selecciona los temas/unidades (detectadas en apuntes):", unidades)
+
+st.markdown("**📘 ¿Deseas complementar con el libro del MINEDUC?**")
+pag_input = st.text_input("Páginas específicas del libro (ej: 1,2,5-10)", key="paginas_pdf")
+
+# === Parámetros ===
+tiempo = st.selectbox("Tiempo por pregunta (segundos):", [5,10,20,30,60,90,120])
+cantidad = st.slider("¿Cuántas preguntas deseas generar?", 1, 50, 10)
+
+if st.button("Generar preguntas"):
+    with st.spinner("🔍 Procesando contenido..."):
+        texto_final = texto_apuntes
+
         libros_url = f"https://graph.microsoft.com/v1.0/me/drive/root:{BASE_LIBROS_PATH}/{hija.upper()}/2025/{asignatura.upper()}:/children"
         response = requests.get(libros_url, headers=headers)
         if response.status_code == 200:
             libros = response.json().get("value", [])
-            for libro in libros:
-                if libro['name'].lower().endswith(".pdf"):
-                    pdf_bytes = download_onedrive_file(libro['id'], token)
-                    libros_texto += extract_text_from_pdf(pdf_bytes)
+            if libros:
+                st.info(f"📚 Se encontraron {len(libros)} libro(s) PDF para complementar.")
+                for libro in libros:
+                    if libro['name'].lower().endswith(".pdf"):
+                        pdf_bytes = download_onedrive_file(libro['id'], token)
+                        texto_final += extract_text_from_pdf(pdf_bytes)
 
-        texto_total = texto_docx + "\n" + libros_texto
+        st.success("✨ Contenido listo para generar preguntas")
 
-        # === LLAMADA A HUGGINGFACE SPACE ===
         try:
-            respuesta = requests.post(HF_SPACE_URL, json={"data": [texto_total, num_preguntas]})
-            if respuesta.status_code == 200:
-                preguntas = respuesta.json()["data"]
-                st.success(f"✅ Se generaron {len(preguntas)} preguntas.")
-                st.json(preguntas)
+            response = requests.post(HF_SPACE_URL, json={"data": [texto_final[:8000], cantidad]})
+            if response.status_code == 200:
+                preguntas = response.json().get("data", [])
+                if preguntas:
+                    st.success(f"✅ Se generaron {len(preguntas)} preguntas.")
+                    st.json(preguntas)
+                    output_path = Path("salidas")
+                    output_path.mkdir(exist_ok=True)
+                    with open(output_path / f"preguntas_{hija}_{asignatura}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json", "w") as f:
+                        json.dump(preguntas, f, indent=2, ensure_ascii=False)
+                else:
+                    st.warning("⚠️ HuggingFace respondió sin preguntas válidas.")
             else:
-                st.error(f"Error al generar preguntas. Código: {respuesta.status_code}")
+                st.error(f"❌ Error HuggingFace: Código {response.status_code}")
         except Exception as e:
-            st.error(f"Error conectando a HuggingFace Space: {e}")
+            st.error(f"❌ Falló la conexión con HuggingFace: {e}")
